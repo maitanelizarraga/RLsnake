@@ -102,3 +102,15 @@ Con ventana de grafica:
 ```bash
 python benchmark.py --model-path models/PPO/100000 --episodes 100 --show-plot
 ```
+
+
+
+
+
+ALG
+aplicamos tres algoritmos para comparar teniendo en cuenta que sirven para casos de acciones discretas (qr-dqn y dqn de sampling efficiency y a2c para speed y ver que da mejores resultados)
+
+- capa de salida de actor softmax
+
+
+usar tensorboars

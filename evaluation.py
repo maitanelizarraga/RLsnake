@@ -1,25 +1,40 @@
 import gymnasium as gym
-import snake_env 
-from stable_baselines3 import PPO
+import snake_env
+from stable_baselines3 import PPO, A2C, DQN
+from sb3_contrib import QRDQN
 
-# Load model
-model_path = "models/PPO/100000"  # Adjust to your saved checkpoint
-model = PPO.load(model_path)
-
-# Create environment with rendering
-env = gym.make("Snake-v0", render_mode="human", render_fps=10)
+# Mapa algoritmo -> clase SB3
+ALGORITHMS = {
+    "PPO": PPO,
+    "A2C": A2C,
+    "DQN": DQN,
+    "QRDQN": QRDQN,
+}
 
 # Number of episodes to watch
 NUM_EPISODES = 5
 
-for ep in range(NUM_EPISODES):
-    obs, _ = env.reset()
-    done = False
-    total_reward = 0
+# Create environment with rendering
+env = gym.make("Snake-v0", render_mode="human", render_fps=10)
 
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        total_reward += reward
-        env.render()  
+try:
+    for algo, algo_cls in ALGORITHMS.items():
+        model_path = f"models/{algo}/100000"  # mismo patrón que training_*.py
+        print(f"\n=== {algo} -> {model_path} ===")
+
+        # Load model
+        model = algo_cls.load(model_path)
+
+        for ep in range(NUM_EPISODES):
+            obs, _ = env.reset()
+            done = False
+            total_reward = 0
+
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+                total_reward += reward
+                env.render()
+finally:
+    env.close()

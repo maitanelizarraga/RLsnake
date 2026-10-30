@@ -5,9 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "gymnasium>=1.4.0",
     "matplotlib>=3.11.2",
+    "opencv-python>=5.0.0.93",
     "optuna-dashboard>=0.21.0",
+    "sb3-contrib>=2.9.2",
     "seaborn>=0.13.2",
+    "stable-baselines3>=2.9.2",
     "tensorboard>=2.21.0",
     "torch>=2.15.0",
     "torchaudio>=2.11.1",
