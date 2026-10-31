@@ -103,7 +103,13 @@ Con ventana de grafica:
 python benchmark.py --model-path models/PPO/100000 --episodes 100 --show-plot
 ```
 
+#31/10/2026
+he creado export_eval_to_csv.py que genera un csv con estas características:
+  - timesteps: en qué paso del entrenamiento se evaluó
 
+  - results: shape (n_evaluaciones, n_episodios_por_eval) con el reward de cada episodio de evaluación
+
+  - ep_lengths: longitudes de esos episodios
 
 
 

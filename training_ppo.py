@@ -22,7 +22,7 @@ eval_env = gym.make("Snake-v0", render_mode="rgb_array")
 eval_callback = EvalCallback(
     eval_env,
     best_model_save_path=f"{models_dir}/best_model",
-    log_path="./logs/eval",
+    log_path=f"./logs/eval/{ALGORITHM}",
     eval_freq=10000,
     deterministic=True,
 )
