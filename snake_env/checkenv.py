@@ -1,5 +1,6 @@
 from stable_baselines3.common.env_checker import check_env
-from env import SnakeEnv
+from snake_env.env import SnakeEnv
 
-env = SnakeEnv()
+env = SnakeEnv(curriculum_level=4)
 check_env(env)
+print("SnakeEnv OK")

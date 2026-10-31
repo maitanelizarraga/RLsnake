@@ -18,8 +18,13 @@ ALGORITHMS = {
 }
 
 METRICS = {
-    "reward": {"label": "retorno", "unit": "puntos"},
-    "apples": {"label": "manzanas recogidas", "unit": "manzanas"},
+    "reward":  {"label": "retorno", "unit": "puntos"},
+    "apples":  {"label": "manzanas recogidas", "unit": "manzanas"},
+    "efficiency": {  # ← NUEVA
+        "label": "retorno por paso",
+        "unit": "puntos/paso",
+        "compute": lambda ret, steps: ret / max(steps, 1),
+    },
 }
 
 

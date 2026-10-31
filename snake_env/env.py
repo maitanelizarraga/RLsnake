@@ -4,243 +4,264 @@ from gymnasium import spaces
 import numpy as np
 import cv2
 import random
-import time
 from collections import deque
 
-# Set the goal length for the snake
+# --- Constants ---
 SNAKE_LEN_GOAL = 30
-# History of actions in the state
 STACKED_ACTIONS = 5
 
-# Define the size of the game table for observation and gameplay
-tableSizeObs = 500 # control of the grid size
+tableSizeObs = 500
 tableSize = 500
 halfTable = int(tableSize / 2)
 
-# Initialize max score
-max_score = 0
+MAX_EPISODE_STEPS = 500          # upper bound (kept in sync with Snake-v0 registration)
+MAX_STEPS_SINCE_APPLE = 100.0    # saturation of the "hunger" observation feature
 
-# Function to handle collision with apple and update score
-def collision_with_apple(apple_position, score, action_size=1):
-    # New apple position must stay on the grid reachable by the snake's step size
-    apple_position = random_apple_position(action_size)
-    score += 1  # Increment the score
+# Curriculum: harder as level increases.
+#   max_k     -> radius (in grid cells) where the apple can spawn.
+#                None = full board (default behaviour).
+#   max_steps -> internal truncation threshold for the episode.
+CURRICULUM_LEVELS = {
+    1: {"max_k": 1,    "max_steps": 100},
+    2: {"max_k": 2,    "max_steps": 200},
+    3: {"max_k": 5,    "max_steps": 350},
+    4: {"max_k": None, "max_steps": 500},
+}
+DEFAULT_CURRICULUM_LEVEL = 4     # non-curriculum runs use the hardest level
+
+
+# --- Helpers ---
+def collision_with_apple(apple_position, score, action_size=1,
+                         max_k_override=None, snake_position=None):
+    apple_position = random_apple_position(
+        action_size,
+        max_k_override=max_k_override,
+        snake_position=snake_position,
+    )
+    score += 1
     return apple_position, score
 
-# Generate a random apple position aligned with the snake's movement grid
-def random_apple_position(action_size=1):
+
+def random_apple_position(action_size=1, max_k_override=None, snake_position=None):
     step = 10 * action_size
     max_k = (halfTable - step) // step
-    return [
-        halfTable + step * random.randint(-max_k, max_k),
-        halfTable + step * random.randint(-max_k, max_k),
-    ]
+    if max_k_override is not None:
+        max_k = min(max_k, max_k_override)
+    max_k = max(max_k, 0)
 
-# Function to check if the snake head collides with game boundaries
+    # Retry to avoid spawning the apple on top of the snake body
+    pos = None
+    for _ in range(100):
+        pos = [
+            halfTable + step * random.randint(-max_k, max_k),
+            halfTable + step * random.randint(-max_k, max_k),
+        ]
+        if snake_position is None or list(pos) not in snake_position:
+            return pos
+    return pos  # fallback
+
+
 def collision_with_boundaries(snake_head):
-    if snake_head[0] >= tableSize or snake_head[0] < 0 or snake_head[1] >= tableSize or snake_head[1] < 0:
-        return True
-    else:
-        return False
+    return (snake_head[0] >= tableSize or snake_head[0] < 0
+            or snake_head[1] >= tableSize or snake_head[1] < 0)
 
-# Function to check if the snake collides with itself
+
 def collision_with_self(snake_position):
-    snake_head = snake_position[0]
-    if snake_head in snake_position[1:]:
-        return True
-    else:
-        return False
+    return snake_position[0] in snake_position[1:]
 
-# Define custom snake game environment class inheriting from gym's Env class
+
 class SnakeEnv(gym.Env):
     metadata = {
         "render_modes": ["human", "rgb_array"],
-        "render_fps": 10
+        "render_fps": 10,
     }
-    
 
-    def __init__(self, render_mode=None, action_size=1, render_fps=10):
-        super(SnakeEnv, self).__init__()
-        # Define the action space: 4 discrete actions (left, right, up, down)
+    def __init__(self, render_mode=None, action_size=1, render_fps=10,
+                 curriculum_level=DEFAULT_CURRICULUM_LEVEL):
+        super().__init__()
         self.action_space = spaces.Discrete(4)
-        
-        # Define the observation space: a Box with size based on snake length goal and other game parameters
         self.observation_space = spaces.Box(
             low=-tableSizeObs,
             high=tableSizeObs,
-            shape=(5 + STACKED_ACTIONS,),
-            dtype=np.float64
+            shape=(7 + STACKED_ACTIONS,),
+            dtype=np.float64,
         )
-        
-        # Initialize game display and reward variables
+
         self.img = np.zeros((tableSize, tableSize, 3), dtype='uint8')
         self.prev_reward = 0
         self.total_reward = 0
         self.score = 0
         self.max_score = 0
 
-        # rendering
         self.render_mode = render_mode
-        self.render_fps = render_fps 
-
-        # number of cells the snake moves in each step
+        self.render_fps = render_fps
         self.action_size = action_size
 
-    # Step function that updates the environment after an action is taken
+        # Curriculum state
+        self.curriculum_level = DEFAULT_CURRICULUM_LEVEL
+        self.current_max_k = None
+        self.current_max_steps = MAX_EPISODE_STEPS
+        self.set_curriculum_level(curriculum_level, verbose=False)
+
+        # Time counters
+        self.step_count = 0
+        self.steps_since_last_apple = 0
+
+    # --- Curriculum control ---
+    def set_curriculum_level(self, level, verbose=True):
+        if level not in CURRICULUM_LEVELS:
+            raise ValueError(
+                f"Unknown curriculum level {level}. Valid: {sorted(CURRICULUM_LEVELS)}"
+            )
+        cfg = CURRICULUM_LEVELS[level]
+        self.curriculum_level = level
+        self.current_max_k = cfg["max_k"]
+        self.current_max_steps = cfg["max_steps"]
+        if verbose:
+            print(f"[SnakeEnv] curriculum level -> {level} "
+                  f"(max_k={self.current_max_k}, max_steps={self.current_max_steps})")
+
+    # --- Gym API ---
     def step(self, action):
-        # Store previous actions
+        self.step_count += 1
         self.prev_actions.append(action)
 
-        # Calculate previous distance to the apple
-        prev_distance = np.linalg.norm(np.array(self.snake_head) - np.array(self.apple_position))
-
-        # Perform the action
+        prev_distance = np.linalg.norm(
+            np.array(self.snake_head) - np.array(self.apple_position)
+        )
         self._take_action(action)
 
-        # Initialize reward
-        reward = 0
+        reward = 0.0
 
-        # Check if snake eats the apple
+        # Eat apple?
         if self.snake_head == self.apple_position:
-            self.apple_position, self.score = collision_with_apple(self.apple_position, self.score, self.action_size)
+            self.apple_position, self.score = collision_with_apple(
+                self.apple_position, self.score, self.action_size,
+                max_k_override=self.current_max_k,
+                snake_position=self.snake_position,
+            )
             self.snake_position.insert(0, list(self.snake_head))
-            reward += 10  # Reward for eating an apple
+            reward += 10
+            self.steps_since_last_apple = 0
         else:
             self.snake_position.insert(0, list(self.snake_head))
             self.snake_position.pop()
+            self.steps_since_last_apple += 1
 
-        # Check for collisions (with boundaries or self)
-        terminated = collision_with_boundaries(self.snake_head) or collision_with_self(self.snake_position)
-        truncated = False
+        # Collisions
+        terminated = (collision_with_boundaries(self.snake_head)
+                      or collision_with_self(self.snake_position))
+        # Internal truncation at curriculum level (outer TimeLimit wraps at 500)
+        truncated = self.step_count >= self.current_max_steps
 
-        # Handle termination (game over) scenario
         if terminated:
-            reward -= 10  # Penalty for dying
+            reward -= 10
         else:
-            # Calculate the current distance to the apple
-            current_distance = np.linalg.norm(np.array(self.snake_head) - np.array(self.apple_position))
+            current_distance = np.linalg.norm(
+                np.array(self.snake_head) - np.array(self.apple_position)
+            )
+            reward += 1 if current_distance < prev_distance else -1
 
-            # Reward for getting closer to the apple, penalty for moving away
-            if current_distance < prev_distance:
-                reward += 1
-            else:
-                reward -= 1
+        # --- Reward hardening: step cost + hunger penalty ---
+        # If you have NOT applied the hardening yet, replace this line with:
+        #     reward -= 0.1
+        reward -= 0.5 + 0.01 * self.steps_since_last_apple
 
-        # Small penalty for each step (optional)
-        reward -= 0.1
+        info = {
+            "apples": self.score,
+            "steps": self.step_count,
+            "curriculum_level": self.curriculum_level,
+        }
 
-        # Information dictionary
-        info = {"apples": self.score}
-
-        # Create observation of the current state
-        head_x = self.snake_head[0]
-        head_y = self.snake_head[1]
+        head_x, head_y = self.snake_head
         snake_length = len(self.snake_position)
         apple_delta_x = self.apple_position[0] - head_x
         apple_delta_y = self.apple_position[1] - head_y
+        time_progress = self.step_count / self.current_max_steps
+        hunger = min(self.steps_since_last_apple / MAX_STEPS_SINCE_APPLE, 1.0)
 
-        observation = [head_x, head_y, apple_delta_x, apple_delta_y, snake_length] + list(self.prev_actions)
-        observation = np.array(observation, dtype=np.float64)
-
+        observation = np.array(
+            [head_x, head_y, apple_delta_x, apple_delta_y, snake_length,
+             time_progress, hunger]
+            + list(self.prev_actions),
+            dtype=np.float64,
+        )
         return observation, reward, terminated, truncated, info
 
-    # Reset the environment to the initial state
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        # Reset game board
-        self.img = np.zeros((tableSize, tableSize, 5), dtype='uint8')
-        
-        # Reset snake position, spaced according to the movement step size
+        self.img = np.zeros((tableSize, tableSize, 3), dtype='uint8')
+
         step = 10 * self.action_size
         self.snake_position = [
             [halfTable, halfTable],
             [halfTable - step, halfTable],
-            [halfTable - 2 * step, halfTable]
+            [halfTable - 2 * step, halfTable],
         ]
-        
-        # Generate random apple position aligned with the movement grid
-        self.apple_position = random_apple_position(self.action_size)
-        
-        # Update max score if needed
+        self.apple_position = random_apple_position(
+            self.action_size,
+            max_k_override=self.current_max_k,
+            snake_position=self.snake_position,
+        )
+
         if self.score > self.max_score:
             self.max_score = self.score
             print(f"New maximum score registered: {self.max_score}")
-        
-        # Reset score and snake head position
+
         self.score = 0
         self.snake_head = [halfTable, halfTable]
-
-        # Initialize direction of the snake
         self.direction = 1
-
-        # Reset reward values
         self.prev_reward = 0
         self.total_reward = 0
+        self.step_count = 0
+        self.steps_since_last_apple = 0
 
-        # Create observation of the current state
-        head_x = self.snake_head[0]
-        head_y = self.snake_head[1]
-        snake_length = len(self.snake_position)
-        apple_delta_x = self.apple_position[0] - head_x
-        apple_delta_y = self.apple_position[1] - head_y
-
-        # Initialize deque to store previous actions
         self.prev_actions = deque(maxlen=STACKED_ACTIONS)
         for _ in range(STACKED_ACTIONS):
             self.prev_actions.append(-1)
 
-        observation = [head_x, head_y, apple_delta_x, apple_delta_y, snake_length] + list(self.prev_actions)
-        observation = np.array(observation, dtype=np.float64)
+        head_x, head_y = self.snake_head
+        snake_length = len(self.snake_position)
+        apple_delta_x = self.apple_position[0] - head_x
+        apple_delta_y = self.apple_position[1] - head_y
 
+        observation = np.array(
+            [head_x, head_y, apple_delta_x, apple_delta_y, snake_length,
+             0.0, 0.0]
+            + list(self.prev_actions),
+            dtype=np.float64,
+        )
         return observation, {}
 
-    # Render the game visually using OpenCV
     def render(self, mode=None):
         if mode is None:
             mode = self.render_mode
-
-        self._update_ui() # Update the game UI
-
+        self._update_ui()
         if mode == 'human':
             cv2.imshow('Snake Game', self.img)
-            cv2.waitKey(int(1000/self.render_fps)) # in milliseconds
-            
-            #time.sleep(0.1)  # Add delay between frames to slow down execution
+            cv2.waitKey(int(1000 / self.render_fps))
         elif mode == 'rgb_array':
             return self.img.copy()
 
-    # Close the OpenCV windows
     def close(self):
         cv2.destroyAllWindows()
 
-    # Update the UI with the current positions of the snake and the apple
     def _update_ui(self):
-        # Clear the game board
         self.img = np.zeros((tableSize, tableSize, 3), dtype='uint8')
-        
-        # Draw apple on the board
         cv2.rectangle(
             self.img,
             (self.apple_position[0], self.apple_position[1]),
             (self.apple_position[0] + 10, self.apple_position[1] + 10),
-            (0, 0, 255),
-            -1
+            (0, 0, 255), -1,
         )
-        
-        # Draw snake on the board
-        for _i,position in enumerate(self.snake_position):
-
+        for i, pos in enumerate(self.snake_position):
             cv2.rectangle(
                 self.img,
-                (position[0], position[1]),
-                (position[0] + 10, position[1] + 10),
-                (0, 255, 255) if _i == 0 else (0, 255, 0),
-                -1
+                (pos[0], pos[1]), (pos[0] + 10, pos[1] + 10),
+                (0, 255, 255) if i == 0 else (0, 255, 0), -1,
             )
 
-    # Handle actions and update the snake's position
     def _take_action(self, action):
-        # Avoid direct opposite movements
         if action == 0 and self.direction == 1:
             action = 1
         elif action == 1 and self.direction == 0:
@@ -249,16 +270,12 @@ class SnakeEnv(gym.Env):
             action = 3
         elif action == 3 and self.direction == 2:
             action = 2
-
-        # Update direction based on the action
         self.direction = action
-
-        # Move the snake head according to the action
-        if action == 0:  # Move left
-            self.snake_head[0] -= 10*self.action_size
-        elif action == 1:  # Move right
-            self.snake_head[0] += 10*self.action_size
-        elif action == 2:  # Move down
-            self.snake_head[1] += 10*self.action_size
-        elif action == 3:  # Move up
-            self.snake_head[1] -= 10*self.action_size
+        if action == 0:
+            self.snake_head[0] -= 10 * self.action_size
+        elif action == 1:
+            self.snake_head[0] += 10 * self.action_size
+        elif action == 2:
+            self.snake_head[1] += 10 * self.action_size
+        elif action == 3:
+            self.snake_head[1] -= 10 * self.action_size

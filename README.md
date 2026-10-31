@@ -110,6 +110,62 @@ evaluate_best_to_csv.py
 - evalúa 100 episodios por defecto,
 - y escribe un único CSV combinado con una columna algorithm para distinguir de qué modelo viene cada fila.
 
++ ## 🎯 Cambios en la función de recompensa
+
+### TL;DR (para tu compañera)
+
+Antes, la recompensa premiaba **sobrevivir** más que **jugar bien**: un agente que daba
+vueltas 500 pasos sin comer nada podía sacar más retorno que uno que comía 3 manzanas
+en 100 pasos. **Hemos subido la penalización por paso** y **hemos añadido una penalización
+que crece con el estancamiento**, para que la recompensa refleje lo que buscábamos:
+**comer manzanas de forma eficiente**, no simplemente aguantar el episodio.
+
+Como consecuencia, los modelos antiguos ya no sirven: hay que reentrenar los 4.
+
+---
+
+### 1. ¿Cuál era el problema?
+
+La recompensa original en `snake_env/env.py → step()` era:
+
+| Evento | Reward |
+|---|---|
+| Comer manzana | **+10** |
+| Morir (borde o cuerpo) | **−10** |
+| Acercarse a la manzana | **+1** |
+| Alejarse de la manzana | **−1** |
+| Coste por paso | **−0.1** |
+
+El desequilibrio: el *shaping* de ±1 por acercarse/alejarse **domina** sobre el −0.1 por paso.
+Un agente que sobrevive 500 pasos acercándose siempre a la manzana acumula:
+
+Es decir: **"dar vueltas sin morir" ganaba a "jugar bien"**. No era lo que buscábamos.
+
+---
+
+### 2. Qué hemos cambiado
+
+Hemos tocado **tres cosas** en `step()` de `env.py`. Las tres van juntas: la primera
+es la que más pesa; las otras dos evitan que el agente se quede quieto.
+
+#### 2.1 Penalización por paso más alta
+
+| Antes | Después |
+|---|---|
+| `reward -= 0.1` | `reward -= 0.5` |
+
+Ahora sobrevivir 500 pasos cuesta `−250` puntos. El shaping de ±1 ya **no** compensa
+quedarse vivo sin comer: hay que comer para no perder.
+
+**Regla mental para la compañera:** con `−0.5` por paso, un agente necesita comer
+**una manzana cada ~20 pasos** para no ir en negativo. Antes necesitaba una cada ~100.
+
+#### 2.2 Penalización creciente por estancamiento
+
+Añadido un castigo extra que **crece** con los pasos transcurridos desde la última manzana:
+
+```python
+reward -= 0.5 + 0.01 * self.steps_since_last_apple
 
 
 ALG
@@ -119,3 +175,12 @@ aplicamos tres algoritmos para comparar teniendo en cuenta que sirven para casos
 
 
 usar tensorboars
+
+
+python training_dqn.py  --curriculum --timesteps 200000 --models-dir models/DQN_curriculum
+
+python evaluate_best_to_csv.py --episodes 100 \
+    --models-dir-template "models/{algo}_curriculum" \
+    --csv-out logs/best_models_curriculum.csv
+
+python benchmark.py --all

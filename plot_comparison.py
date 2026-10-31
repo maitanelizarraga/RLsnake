@@ -12,13 +12,15 @@ import numpy as np
 DEFAULT_CSV = "logs/best_models_evaluation.csv"
 DEFAULT_OUT = "logs/models_comparison.png"
 
+CSV_COLUMNS = ("return", "apples", "steps", "apples_per_100_steps")
+
 
 def load_csv(path: Path) -> dict[str, dict[str, list[float]]]:
     data: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             algo = row["algorithm"]
-            for col in ("return", "apples", "steps"):
+            for col in CSV_COLUMNS:
                 val = row.get(col, "")
                 if val == "":
                     continue
@@ -32,26 +34,28 @@ def load_csv(path: Path) -> dict[str, dict[str, list[float]]]:
 def plot(data: dict, output: Path, show: bool = False) -> None:
     algos = sorted(data)
     if not algos:
-        print("CSV vacío, nada que graficar.")
+        print("CSV vacio, nada que graficar.")
         return
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(algos)))
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    def bar(ax, metric: str, title: str, ylabel: str) -> None:
+    def bar(ax, metric: str, title: str, ylabel: str, fmt: str = "{:.2f}\n\u00b1{:.2f}") -> None:
         means = [np.mean(data[a][metric]) if data[a][metric] else 0.0 for a in algos]
-        stds = [np.std(data[a][metric])  if data[a][metric] else 0.0 for a in algos]
+        stds = [np.std(data[a][metric]) if data[a][metric] else 0.0 for a in algos]
         ax.bar(algos, means, yerr=stds, capsize=8, color=colors, edgecolor="black")
         ax.set_title(title)
         ax.set_ylabel(ylabel)
         ax.grid(axis="y", linestyle=":", alpha=0.4)
         for i, (m, s) in enumerate(zip(means, stds)):
-            ax.text(i, m + s, f"{m:.2f}\n±{s:.2f}",
-                    ha="center", va="bottom", fontsize=9)
+            ax.text(i, m + s, fmt.format(m, s), ha="center", va="bottom", fontsize=9)
 
-    bar(axes[0, 0], "return", "Retorno medio por algoritmo", "Retorno")
-    bar(axes[0, 1], "apples", "Manzanas medias por algoritmo", "Manzanas")
-    bar(axes[1, 0], "steps",  "Pasos medios por algoritmo",    "Pasos")
+    bar(axes[0, 0], "return",
+        "Retorno medio por algoritmo", "Retorno")
+    bar(axes[0, 1], "apples",
+        "Manzanas medias por algoritmo", "Manzanas")
+    bar(axes[1, 0], "apples_per_100_steps",
+        "Eficiencia: manzanas por 100 pasos", "Manzanas / 100 pasos")
 
     # Boxplot de retornos
     ax = axes[1, 1]
@@ -61,17 +65,17 @@ def plot(data: dict, output: Path, show: bool = False) -> None:
         patch.set_facecolor(color)
     ax.set_xticks(range(1, len(algos) + 1))
     ax.set_xticklabels(algos)
-    ax.set_title("Distribución del retorno por algoritmo")
+    ax.set_title("Distribucion del retorno por algoritmo")
     ax.set_ylabel("Retorno")
     ax.grid(axis="y", linestyle=":", alpha=0.4)
 
-    fig.suptitle("Comparación de los 4 modelos entrenados en Snake",
+    fig.suptitle("Comparacion de los 4 modelos entrenados en Snake",
                  fontsize=14, fontweight="bold")
     fig.tight_layout()
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
-    print(f"Gráfico comparativo guardado en: {output}")
+    print(f"Grafico comparativo guardado en: {output}")
     if show:
         plt.show()
     plt.close(fig)
@@ -86,7 +90,7 @@ def main() -> None:
 
     csv_path = Path(args.csv)
     if not csv_path.exists():
-        print(f"[ERROR] No se encontró el CSV: {csv_path}")
+        print(f"[ERROR] No se encontro el CSV: {csv_path}")
         print("Ejecuta primero:  python evaluate_best_to_csv.py")
         return
 
