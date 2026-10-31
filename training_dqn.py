@@ -47,3 +47,4 @@ mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
 print(f"Mean reward: {mean_reward} ± {std_reward}")
 
 env.close()
+eval_env.close() 
