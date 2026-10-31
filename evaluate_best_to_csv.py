@@ -13,22 +13,37 @@ ALGORITHMS = {"PPO": PPO, "A2C": A2C, "DQN": DQN, "QRDQN": QRDQN}
 
 DEFAULT_EPISODES = 100
 DEFAULT_CSV = "logs/best_models_evaluation.csv"
-DEFAULT_TEMPLATE = "models/{algo}"
+DEFAULT_VARIANTS = "baseline=models/{algo}"
+
 FIELDNAMES = [
-    "algorithm", "episode", "return", "apples", "steps",
-    "apples_per_100_steps",
+    "variant", "algorithm", "episode",
+    "return", "apples", "steps", "apples_per_100_steps",
     "terminated", "truncated",
 ]
 
 
-def resolve_best_model_path(algo_upper: str,
-                            template: str = DEFAULT_TEMPLATE) -> Path | None:
-    base = Path(template.format(algo=algo_upper))
+def parse_variants(spec: str) -> list[tuple[str, str]]:
+    """Parse 'name=template,name=template' -> [(name, template), ...]."""
+    out = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Variante inválida (falta '='): {item!r}")
+        name, tmpl = item.split("=", 1)
+        out.append((name.strip(), tmpl.strip()))
+    if not out:
+        raise ValueError("No se ha definido ninguna variante.")
+    return out
+
+
+def resolve_best_model_path(base_dir: Path) -> Path | None:
     candidates = [
-        base / "best_model" / "best_model.zip",
-        base / "best_model",
-        base / "100000.zip",
-        base / "100000",
+        base_dir / "best_model" / "best_model.zip",
+        base_dir / "best_model",
+        base_dir / "100000.zip",
+        base_dir / "100000",
     ]
     for c in candidates:
         if c.is_file():
@@ -69,55 +84,63 @@ def run_episodes(model, env, num_episodes: int, deterministic: bool = True) -> l
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Evalua el best_model de cada algoritmo y guarda un CSV combinado."
+        description="Evalúa los best_model de cada algoritmo/variante y guarda un CSV combinado."
     )
     ap.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
     ap.add_argument("--algorithm", choices=[a.lower() for a in ALGORITHMS], default=None)
     ap.add_argument("--env-id", default="Snake-v0")
     ap.add_argument("--csv-out", default=DEFAULT_CSV)
     ap.add_argument("--stochastic", action="store_true")
-    ap.add_argument("--models-dir-template", default=DEFAULT_TEMPLATE,
-                    help="Per-algorithm model dir template. Use "
-                         "'models/{algo}_curriculum' for curriculum runs.")
+    ap.add_argument("--variants", default=DEFAULT_VARIANTS,
+                    help="Lista nombre=plantilla. Plantilla usa {algo}. "
+                         "Ejemplo: 'baseline=models/{algo},curriculum=models/{algo}_curriculum'")
     args = ap.parse_args()
 
+    variants = parse_variants(args.variants)
     algos = [args.algorithm.upper()] if args.algorithm else list(ALGORITHMS)
     csv_out = Path(args.csv_out)
     csv_out.parent.mkdir(parents=True, exist_ok=True)
 
     env = gym.make(args.env_id, render_mode="rgb_array", curriculum_level=4)
     all_rows: list[dict] = []
-    summary: list[tuple[str, float, float, float, float, float]] = []
+    summary: list[tuple[str, str, float, float, float, float, float]] = []
 
     try:
-        for algo_upper in algos:
-            model_path = resolve_best_model_path(algo_upper, args.models_dir_template)
-            if model_path is None:
-                print(f"[WARN] {algo_upper}: no model found under "
-                      f"'{args.models_dir_template.format(algo=algo_upper)}' (skip)")
-                continue
+        for variant_name, template in variants:
+            for algo_upper in algos:
+                base_dir = Path(template.format(algo=algo_upper))
+                model_path = resolve_best_model_path(base_dir)
+                if model_path is None:
+                    print(f"[WARN] {variant_name}/{algo_upper}: no model under "
+                          f"'{base_dir}' (skip)")
+                    continue
 
-            print(f"\n=== {algo_upper} -> {model_path} ({args.episodes} episodios) ===")
-            try:
-                model = ALGORITHMS[algo_upper].load(str(model_path))
-                rows = run_episodes(model, env, args.episodes,
-                                    deterministic=not args.stochastic)
-            except Exception as exc:
-                print(f"[ERROR] {algo_upper}: {exc}")
-                continue
+                print(f"\n=== {variant_name} / {algo_upper} -> {model_path} "
+                      f"({args.episodes} episodios) ===")
+                try:
+                    model = ALGORITHMS[algo_upper].load(str(model_path))
+                    rows = run_episodes(model, env, args.episodes,
+                                        deterministic=not args.stochastic)
+                except Exception as exc:
+                    print(f"[ERROR] {variant_name}/{algo_upper}: {exc}")
+                    continue
 
-            for r in rows:
-                r["algorithm"] = algo_upper
-            all_rows.extend(rows)
+                for r in rows:
+                    r["variant"] = variant_name
+                    r["algorithm"] = algo_upper
+                all_rows.extend(rows)
 
-            ret = np.array([r["return"] for r in rows], dtype=float)
-            eff = np.array([r["apples_per_100_steps"] for r in rows], dtype=float)
-            summary.append((algo_upper, ret.mean(), ret.std(), ret.max(), ret.min(), eff.mean()))
+                ret = np.array([r["return"] for r in rows], dtype=float)
+                eff = np.array([r["apples_per_100_steps"] for r in rows], dtype=float)
+                summary.append((
+                    variant_name, algo_upper,
+                    ret.mean(), ret.std(), ret.max(), ret.min(), eff.mean(),
+                ))
     finally:
         env.close()
 
     if not all_rows:
-        print("\nNo se evaluo ningun modelo.")
+        print("\nNo se evaluó ningún modelo.")
         return
 
     with open(csv_out, "w", newline="") as f:
@@ -128,9 +151,10 @@ def main() -> None:
 
     print(f"\nCSV combinado guardado en: {csv_out} ({len(all_rows)} filas)")
     print("\nResumen:")
-    print(f"{'algo':<6} {'mean':>8} {'std':>8} {'max':>8} {'min':>8} {'apples/100':>12}")
-    for algo, m, s, mx, mn, ef in summary:
-        print(f"{algo:<6} {m:>8.2f} {s:>8.2f} {mx:>8.2f} {mn:>8.2f} {ef:>12.2f}")
+    print(f"{'variant':<12} {'algo':<6} {'mean':>8} {'std':>8} "
+          f"{'max':>8} {'min':>8} {'apples/100':>12}")
+    for v, a, m, s, mx, mn, ef in summary:
+        print(f"{v:<12} {a:<6} {m:>8.2f} {s:>8.2f} {mx:>8.2f} {mn:>8.2f} {ef:>12.2f}")
 
 
 if __name__ == "__main__":

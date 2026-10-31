@@ -1,68 +1,101 @@
 import argparse
 from pathlib import Path
 
-import gymnasium as gym
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import gymnasium as gym
 from stable_baselines3 import PPO, A2C, DQN
 from sb3_contrib import QRDQN
 
-import snake_env  # noqa: F401 - Registers Snake environments via gymnasium.register
+import snake_env  # noqa: F401
 
-# Mapeo algoritmo -> clase de modelo (todos comparten la misma API .load / .predict)
-ALGORITHMS = {
-    "ppo": PPO,
-    "a2c": A2C,
-    "dqn": DQN,
-    "qrdqn": QRDQN,
-}
+ALGORITHMS = {"ppo": PPO, "a2c": A2C, "dqn": DQN, "qrdqn": QRDQN}
 
 METRICS = {
-    "reward":  {"label": "retorno", "unit": "puntos"},
-    "apples":  {"label": "manzanas recogidas", "unit": "manzanas"},
-    "efficiency": {  # ← NUEVA
-        "label": "retorno por paso",
-        "unit": "puntos/paso",
-        "compute": lambda ret, steps: ret / max(steps, 1),
-    },
+    "reward": {"label": "retorno", "unit": "puntos"},
+    "apples": {"label": "manzanas recogidas", "unit": "manzanas"},
 }
 
+DEFAULT_VARIANTS = "baseline=models/{algo}"
+
+
+# ---------------------------------------------------------------- paths
 
 def resolve_model_path(model_path: str) -> Path:
-    """Resolve model path allowing both with and without .zip extension."""
     path = Path(model_path)
     if path.exists():
         return path
     zip_path = path.with_suffix(".zip")
     if zip_path.exists():
         return zip_path
-    raise FileNotFoundError(f"No se encontro el modelo en '{model_path}' ni en '{zip_path}'.")
+    raise FileNotFoundError(f"No se encontró '{model_path}' ni '{zip_path}'.")
 
 
-def run_episode(model, env: gym.Env, metric: str, deterministic: bool = True) -> float:
+def resolve_model_in_dir(base_dir: Path) -> Path | None:
+    candidates = [
+        base_dir / "best_model" / "best_model.zip",
+        base_dir / "best_model",
+        base_dir / "100000.zip",
+        base_dir / "100000",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+        if c.is_dir() and (c / "best_model.zip").exists():
+            return c / "best_model.zip"
+    return None
+
+
+def parse_variants(spec: str) -> list[tuple[str, str]]:
+    out = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Variante inválida (falta '='): {item!r}")
+        name, tmpl = item.split("=", 1)
+        out.append((name.strip(), tmpl.strip()))
+    if not out:
+        raise ValueError("No se ha definido ninguna variante.")
+    return out
+
+
+# ---------------------------------------------------------------- eval
+
+def run_episode(model, env, metric: str, deterministic: bool = True) -> tuple[float, int]:
     obs, info = env.reset()
     done = False
-    episode_return = 0.0
+    total = 0.0
+    steps = 0
     while not done:
         action, _ = model.predict(obs, deterministic=deterministic)
         obs, reward, terminated, truncated, info = env.step(action)
-        episode_return += float(reward)
+        total += float(reward)
+        steps += 1
         done = terminated or truncated
-    return episode_return if metric == "reward" else float(info["apples"])
+    value = total if metric == "reward" else float(info.get("apples", 0))
+    return value, steps
 
 
-def evaluate_policy_metric(model, env: gym.Env, metric: str, num_episodes: int = 100,
+def evaluate_policy_metric(model, env, metric: str, num_episodes: int = 100,
                            deterministic: bool = True) -> np.ndarray:
     values = []
     for episode in range(1, num_episodes + 1):
-        value = run_episode(model, env, metric=metric, deterministic=deterministic)
+        value, steps = run_episode(model, env, metric=metric,
+                                   deterministic=deterministic)
         values.append(value)
-        print(f"Episodio {episode:03d} | {METRICS[metric]['label']} = {value:.2f}")
+        print(f"Episodio {episode:03d} | {METRICS[metric]['label']} = {value:.2f} "
+              f"| steps = {steps}")
     return np.array(values, dtype=np.float64)
 
 
-def plot_metric(values: np.ndarray, metric: str, output_path: Path, title_prefix: str = "",
-                show_plot: bool = False) -> None:
+# ---------------------------------------------------------------- plots
+
+def plot_metric(values: np.ndarray, metric: str, output_path: Path,
+                title_prefix: str = "", show_plot: bool = False) -> None:
     episodes = np.arange(1, len(values) + 1)
     max_idx, min_idx = int(np.argmax(values)), int(np.argmin(values))
     colors = np.array(["tab:blue"] * len(values), dtype=object)
@@ -79,69 +112,89 @@ def plot_metric(values: np.ndarray, metric: str, output_path: Path, title_prefix
     ax.set_ylabel(label.capitalize())
     ax.grid(axis="y", linestyle=":", alpha=0.4)
     ax.legend(loc="upper right")
-    ax.text(episodes[max_idx], values[max_idx], f"MAX {values[max_idx]:.2f}", color="red",
-            fontsize=9, ha="center", va="bottom")
-    ax.text(episodes[min_idx], values[min_idx], f"MIN {values[min_idx]:.2f}", color="red",
-            fontsize=9, ha="center", va="top")
+
+    if max_idx != min_idx:
+        ax.text(episodes[max_idx], values[max_idx], f"MAX {values[max_idx]:.2f}",
+                color="red", fontsize=9, ha="center", va="bottom")
+        ax.text(episodes[min_idx], values[min_idx], f"MIN {values[min_idx]:.2f}",
+                color="red", fontsize=9, ha="center", va="top")
+    else:
+        ax.text(episodes[max_idx], values[max_idx], f"= {values[max_idx]:.2f}",
+                color="red", fontsize=9, ha="center", va="bottom")
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150)
-    print(f"Grafica guardada en: {output_path}")
+    print(f"Gráfica guardada en: {output_path}")
     if show_plot:
         plt.show()
     plt.close(fig)
 
 
-def plot_comparison(results: dict[str, np.ndarray], metric: str, output_path: Path,
-                    show_plot: bool = False) -> None:
-    """Grafica de barras con media ± std por algoritmo."""
-    labels = list(results)
-    means = np.array([np.mean(results[a]) for a in labels])
-    stds = np.array([np.std(results[a]) for a in labels])
+def plot_comparison(results: dict[tuple[str, str], np.ndarray], metric: str,
+                    output_path: Path, show_plot: bool = False) -> None:
+    """Barras agrupadas por variante. results[(variant, ALGO)] = array."""
+    if not results:
+        return
+    algos = sorted({algo for _, algo in results})
+    variants = sorted({v for v, _ in results})
+    n_v = len(variants)
+    width = 0.8 / n_v
+    x = np.arange(len(algos))
+    colors = plt.cm.tab10(np.linspace(0, 1, max(n_v, 1)))
     label = METRICS[metric]["label"]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    x = np.arange(len(labels))
-    ax.bar(x, means, yerr=stds, capsize=8, color="tab:blue", edgecolor="black")
-    ax.set_xticks(x, [a.upper() for a in labels])
-    ax.set_ylabel(label.capitalize())
-    ax.set_title(f"Comparacion de {label} medio por algoritmo ({len(results[labels[0]])} episodios)")
-    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for i, variant in enumerate(variants):
+        means, stds = [], []
+        for algo in algos:
+            arr = results.get((variant, algo))
+            means.append(float(np.mean(arr)) if arr is not None else 0.0)
+            stds.append(float(np.std(arr)) if arr is not None else 0.0)
+        offset = (i - (n_v - 1) / 2.0) * width
+        ax.bar(x + offset, means, width, yerr=stds, capsize=4,
+               label=variant, color=colors[i], edgecolor="black")
+        for xi, (m, s) in zip(x + offset, zip(means, stds)):
+            ax.text(xi, m + s, f"{m:.2f}\n±{s:.2f}",
+                    ha="center", va="bottom", fontsize=8)
 
-    for i, (m, s) in enumerate(zip(means, stds)):
-        ax.text(i, m + s, f"{m:.2f}\n±{s:.2f}", ha="center", va="bottom", fontsize=9)
+    ax.set_xticks(x)
+    ax.set_xticklabels([a.upper() for a in algos])
+    ax.set_ylabel(label.capitalize())
+    ep_count = len(next(iter(results.values())))
+    ax.set_title(f"Comparación de {label} medio por algoritmo/variante "
+                 f"({ep_count} episodios)")
+    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    if n_v > 1:
+        ax.legend(title="variante")
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150)
-    print(f"Grafica comparativa guardada en: {output_path}")
+    print(f"Gráfica comparativa guardada en: {output_path}")
     if show_plot:
         plt.show()
     plt.close(fig)
 
 
+# ---------------------------------------------------------------- main
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Benchmark de politicas entrenadas en Snake.")
-    parser.add_argument("--algorithm", choices=list(ALGORITHMS), default="ppo",
-                        help="Algoritmo a evaluar (ppo, a2c, dqn, qrdqn).")
+    parser = argparse.ArgumentParser(description="Benchmark de políticas entrenadas en Snake.")
+    parser.add_argument("--algorithm", choices=list(ALGORITHMS), default="ppo")
     parser.add_argument("--all", action="store_true",
-                        help="Evaluar todos los algoritmos y generar comparacion (ignora --algorithm/--model-path).")
+                        help="Evaluar todos los algoritmos (ignora --algorithm/--model-path).")
+    parser.add_argument("--variants", default=DEFAULT_VARIANTS,
+                        help="Lista nombre=plantilla. Plantilla usa {algo}. "
+                             "Ejemplo: 'baseline=models/{algo},curriculum=models/{algo}_curriculum'")
     parser.add_argument("--model-path", type=str, default=None,
-                        help="Ruta al modelo de SB3. Si no se indica se usa models/{ALGO}/100000.")
-    parser.add_argument("--env-id", type=str, default="Snake-v0",
-                        help="ID del entorno registrado en gymnasium.")
-    parser.add_argument("--episodes", type=int, default=100,
-                        help="Numero de episodios de evaluacion.")
-    parser.add_argument("--metric", choices=list(METRICS), default="reward",
-                        help="Metrica a evaluar: 'reward' o 'apples'.")
-    parser.add_argument("--stochastic", action="store_true",
-                        help="Usa politica no determinista (por defecto determinista).")
-    parser.add_argument("--plot-path", type=str, default=None,
-                        help="Ruta donde guardar la grafica. Por defecto: logs/benchmark_{algo}_{metric}.png "
-                             "o logs/benchmark_comparison_{metric}.png cuando se usa --all.")
-    parser.add_argument("--show-plot", action="store_true",
-                        help="Mostrar la grafica en pantalla al finalizar.")
+                        help="Solo válido con --algorithm y una única --variants.")
+    parser.add_argument("--env-id", type=str, default="Snake-v0")
+    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--metric", choices=list(METRICS), default="reward")
+    parser.add_argument("--stochastic", action="store_true")
+    parser.add_argument("--plot-path", type=str, default=None)
+    parser.add_argument("--show-plot", action="store_true")
     return parser
 
 
@@ -150,64 +203,69 @@ def main() -> None:
     deterministic = not args.stochastic
     metric = args.metric
 
+    variants = parse_variants(args.variants)
     algorithms = list(ALGORITHMS) if args.all else [args.algorithm]
-    results: dict[str, np.ndarray] = {}
 
-    for algo in algorithms:
-        algo_upper = algo.upper()
+    if args.model_path and (args.all or len(variants) > 1):
+        print("[WARN] --model-path se ignora porque hay varias variantes o --all.")
 
-        # Ruta del modelo: la indicada por el usuario (solo en modo individual)
-        # o el patrón por defecto models/<ALGO>/100000.
-        if args.model_path and not args.all:
-            model_path_str = args.model_path
-        else:
-            model_path_str = f"models/{algo_upper}/100000"
+    results: dict[tuple[str, str], np.ndarray] = {}
 
-        print(f"\n=== Evaluando {algo_upper} desde '{model_path_str}' ===")
-        try:
-            model_path = resolve_model_path(model_path_str)
-        except FileNotFoundError as exc:
-            print(f"[WARN] {exc}")
+    for variant_name, template in variants:
+        for algo in algorithms:
+            algo_upper = algo.upper()
+
+            if args.model_path and not args.all and len(variants) == 1:
+                model_path = resolve_model_path(args.model_path)
+            else:
+                base_dir = Path(template.format(algo=algo_upper))
+                model_path = resolve_model_in_dir(base_dir)
+                if model_path is None:
+                    print(f"[WARN] {variant_name}/{algo_upper}: sin modelo en "
+                          f"'{base_dir}' (skip)")
+                    if args.all:
+                        continue
+                    raise FileNotFoundError(
+                        f"No hay modelo en {base_dir} ni subcarpetas conocidas."
+                    )
+
+            print(f"\n=== {variant_name} / {algo_upper} -> '{model_path}' ===")
+            model = ALGORITHMS[algo].load(model_path)
+            env = gym.make(args.env_id, render_mode="rgb_array", curriculum_level=4)
+            try:
+                values = evaluate_policy_metric(model, env, metric=metric,
+                                                num_episodes=args.episodes,
+                                                deterministic=deterministic)
+            finally:
+                env.close()
+            results[(variant_name, algo_upper)] = values
+
             if args.all:
-                continue  # si falta uno, seguimos con los demás
-            raise
-
-        model = ALGORITHMS[algo].load(model_path)
-        env = gym.make(args.env_id, render_mode="rgb_array")
-        try:
-            values = evaluate_policy_metric(model, env, metric=metric,
-                                            num_episodes=args.episodes,
-                                            deterministic=deterministic)
-        finally:
-            env.close()
-        results[algo_upper] = values
-
-        # En modo --all, guardamos una grafica individual por algoritmo
-        if args.all:
-            per_model_path = Path(f"logs/benchmark_{algo_upper}_{metric}.png")
-            plot_metric(values, metric=metric, output_path=per_model_path,
-                        title_prefix=f" — {algo_upper}", show_plot=False)
+                per_path = Path(f"logs/benchmark_{variant_name}_{algo_upper}_{metric}.png")
+                plot_metric(values, metric=metric, output_path=per_path,
+                            title_prefix=f" — {variant_name} / {algo_upper}",
+                            show_plot=False)
 
     if not results:
-        print("No se pudo evaluar ningun modelo (¿faltan los .zip en models/?).")
+        print("No se pudo evaluar ningún modelo.")
         return
 
-    # Resumen por consola
     label = METRICS[metric]["label"]
     print("\nResumen benchmark")
-    for algo, values in results.items():
-        print(f"[{algo}] {label} medio: {np.mean(values):.2f} | "
+    for (variant, algo), values in results.items():
+        print(f"[{variant}/{algo}] {label} medio: {np.mean(values):.2f} | "
               f"max: {np.max(values):.2f} | min: {np.min(values):.2f}")
 
-    # Grafica final
-    if args.all:
+    if args.all or len(results) > 1:
         output = Path(args.plot_path or f"logs/benchmark_comparison_{metric}.png")
-        plot_comparison(results, metric=metric, output_path=output, show_plot=args.show_plot)
+        plot_comparison(results, metric=metric, output_path=output,
+                        show_plot=args.show_plot)
     else:
-        algo_upper = next(iter(results))
-        output = Path(args.plot_path or f"logs/benchmark_{algo_upper}_{metric}.png")
-        plot_metric(results[algo_upper], metric=metric, output_path=output,
-                    title_prefix=f" — {algo_upper}", show_plot=args.show_plot)
+        (variant, algo), values = next(iter(results.items()))
+        output = Path(args.plot_path or f"logs/benchmark_{variant}_{algo}_{metric}.png")
+        plot_metric(values, metric=metric, output_path=output,
+                    title_prefix=f" — {variant} / {algo}",
+                    show_plot=args.show_plot)
 
 
 if __name__ == "__main__":

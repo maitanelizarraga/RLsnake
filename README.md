@@ -179,8 +179,14 @@ usar tensorboars
 
 python training_dqn.py  --curriculum --timesteps 200000 --models-dir models/DQN_curriculum
 
-python evaluate_best_to_csv.py --episodes 100 \
-    --models-dir-template "models/{algo}_curriculum" \
-    --csv-out logs/best_models_curriculum.csv
+python evaluate_best_to_csv.py \
+    --episodes 100 \
+    --variants "baseline=models/{algo},curriculum=models/{algo}_curriculum" \
+    --csv-out logs/best_models_variants.csv
 
-python benchmark.py --all
+
+  python plot_comparison.py --csv logs/best_models_variants.csv \
+    --out logs/comparison_variants.png --show
+
+  python benchmark.py --all --episodes 50 --metric reward \
+    --variants "baseline=models/{algo},curriculum=models/{algo}_curriculum"

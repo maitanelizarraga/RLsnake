@@ -1,11 +1,11 @@
-"""plot_comparison.py — Comparativa visual de los 4 modelos en una figura 2x2."""
+"""plot_comparison.py — Comparativa visual agrupada por variante."""
 import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")  # headless-safe
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -15,83 +15,127 @@ DEFAULT_OUT = "logs/models_comparison.png"
 CSV_COLUMNS = ("return", "apples", "steps", "apples_per_100_steps")
 
 
-def load_csv(path: Path) -> dict[str, dict[str, list[float]]]:
-    data: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+def load_csv(path: Path):
+    """data[(algo, variant)][metric] = list[float]."""
+    data: dict[tuple[str, str], dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             algo = row["algorithm"]
+            variant = (row.get("variant") or "baseline").strip()
+            key = (algo, variant)
             for col in CSV_COLUMNS:
                 val = row.get(col, "")
                 if val == "":
                     continue
                 try:
-                    data[algo][col].append(float(val))
+                    data[key][col].append(float(val))
                 except ValueError:
                     pass
     return data
 
 
-def plot(data: dict, output: Path, show: bool = False) -> None:
-    algos = sorted(data)
-    if not algos:
-        print("CSV vacio, nada que graficar.")
-        return
-
-    colors = plt.cm.tab10(np.linspace(0, 1, len(algos)))
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    def bar(ax, metric: str, title: str, ylabel: str, fmt: str = "{:.2f}\n\u00b1{:.2f}") -> None:
-        means = [np.mean(data[a][metric]) if data[a][metric] else 0.0 for a in algos]
-        stds = [np.std(data[a][metric]) if data[a][metric] else 0.0 for a in algos]
-        ax.bar(algos, means, yerr=stds, capsize=8, color=colors, edgecolor="black")
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.grid(axis="y", linestyle=":", alpha=0.4)
-        for i, (m, s) in enumerate(zip(means, stds)):
-            ax.text(i, m + s, fmt.format(m, s), ha="center", va="bottom", fontsize=9)
-
-    bar(axes[0, 0], "return",
-        "Retorno medio por algoritmo", "Retorno")
-    bar(axes[0, 1], "apples",
-        "Manzanas medias por algoritmo", "Manzanas")
-    bar(axes[1, 0], "apples_per_100_steps",
-        "Eficiencia: manzanas por 100 pasos", "Manzanas / 100 pasos")
-
-    # Boxplot de retornos
-    ax = axes[1, 1]
-    box_data = [data[a]["return"] for a in algos]
-    bp = ax.boxplot(box_data, patch_artist=True)
-    for patch, color in zip(bp["boxes"], colors):
-        patch.set_facecolor(color)
-    ax.set_xticks(range(1, len(algos) + 1))
+def _grouped_bars(ax, data, algos, variants, metric, title, ylabel, colors,
+                  fmt="mean±std"):
+    n_v = len(variants)
+    width = 0.8 / n_v
+    x = np.arange(len(algos))
+    for i, variant in enumerate(variants):
+        means, stds = [], []
+        for algo in algos:
+            vals = data.get((algo, variant), {}).get(metric, [])
+            means.append(np.mean(vals) if vals else 0.0)
+            stds.append(np.std(vals) if vals else 0.0)
+        offset = (i - (n_v - 1) / 2.0) * width
+        ax.bar(x + offset, means, width, yerr=stds, capsize=3,
+               label=variant, color=colors[i], edgecolor="black")
+        if n_v <= 2:
+            for xi, (m, s) in zip(x + offset, zip(means, stds)):
+                ax.text(xi, m + s, f"{m:.2f}", ha="center", va="bottom", fontsize=7)
+    ax.set_xticks(x)
     ax.set_xticklabels(algos)
-    ax.set_title("Distribucion del retorno por algoritmo")
-    ax.set_ylabel("Retorno")
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    ax.legend(fontsize=8, loc="upper right")
+
+
+def _grouped_boxplot(ax, data, algos, variants, metric, title, ylabel, colors):
+    n_v = len(variants)
+    positions, box_data, box_colors = [], [], []
+    tick_pos, tick_labels = [], []
+    for ai, algo in enumerate(algos):
+        for vi, variant in enumerate(variants):
+            pos = ai * (n_v + 1) + vi
+            vals = data.get((algo, variant), {}).get(metric, [])
+            if vals:
+                positions.append(pos)
+                box_data.append(vals)
+                box_colors.append(colors[vi])
+        tick_pos.append(ai * (n_v + 1) + (n_v - 1) / 2.0)
+        tick_labels.append(algo)
+    if not box_data:
+        ax.text(0.5, 0.5, "Sin datos", ha="center", va="center",
+                transform=ax.transAxes)
+        return
+    bp = ax.boxplot(box_data, positions=positions, patch_artist=True, widths=0.7)
+    for patch, color in zip(bp["boxes"], box_colors):
+        patch.set_facecolor(color)
+    ax.set_xticks(tick_pos)
+    ax.set_xticklabels(tick_labels)
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
     ax.grid(axis="y", linestyle=":", alpha=0.4)
 
-    fig.suptitle("Comparacion de los 4 modelos entrenados en Snake",
-                 fontsize=14, fontweight="bold")
+
+def plot(data, output: Path, show: bool = False) -> None:
+    if not data:
+        print("CSV vacío, nada que graficar.")
+        return
+
+    algos = sorted({k[0] for k in data})
+    variants = sorted({k[1] for k in data})
+    colors = plt.cm.tab10(np.linspace(0, 1, max(len(variants), 1)))
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    _grouped_bars(axes[0, 0], data, algos, variants, "return",
+                  "Retorno medio por algoritmo/variante", "Retorno", colors)
+    _grouped_bars(axes[0, 1], data, algos, variants, "apples",
+                  "Manzanas medias por algoritmo/variante", "Manzanas", colors)
+    _grouped_bars(axes[1, 0], data, algos, variants, "apples_per_100_steps",
+                  "Eficiencia: manzanas por 100 pasos", "Manzanas / 100 pasos",
+                  colors)
+    _grouped_boxplot(axes[1, 1], data, algos, variants, "return",
+                     "Distribución del retorno", "Retorno", colors)
+
+    subtitle = ("Comparación de variantes: " + ", ".join(variants)
+                if len(variants) > 1 else f"Variante: {variants[0]}")
+    fig.suptitle(f"Comparación de modelos entrenados en Snake\n{subtitle}",
+                 fontsize=13, fontweight="bold")
     fig.tight_layout()
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
-    print(f"Grafico comparativo guardado en: {output}")
+    print(f"Gráfico comparativo guardado en: {output}")
     if show:
         plt.show()
     plt.close(fig)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Comparativa de los 4 modelos desde el CSV.")
-    ap.add_argument("--csv", default=DEFAULT_CSV, help=f"CSV de entrada (defecto: {DEFAULT_CSV})")
-    ap.add_argument("--out", default=DEFAULT_OUT, help=f"PNG de salida (defecto: {DEFAULT_OUT})")
-    ap.add_argument("--show", action="store_true", help="Mostrar la figura al final")
+    ap = argparse.ArgumentParser(description="Comparativa de modelos desde el CSV.")
+    ap.add_argument("--csv", default=DEFAULT_CSV)
+    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--show", action="store_true")
     args = ap.parse_args()
 
     csv_path = Path(args.csv)
     if not csv_path.exists():
-        print(f"[ERROR] No se encontro el CSV: {csv_path}")
-        print("Ejecuta primero:  python evaluate_best_to_csv.py")
+        print(f"[ERROR] No se encontró el CSV: {csv_path}")
+        print("Ejecuta primero:  python evaluate_best_to_csv.py "
+              "--variants \"baseline=models/{algo},curriculum=models/{algo}_curriculum\"")
         return
 
     plot(load_csv(csv_path), Path(args.out), show=args.show)
