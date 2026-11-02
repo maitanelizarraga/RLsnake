@@ -165,7 +165,7 @@ class SnakeEnv(gym.Env):
         # --- Reward hardening: step cost + hunger penalty ---
         # If you have NOT applied the hardening yet, replace this line with:
         #     reward -= 0.1
-        reward -= 0.5 + 0.01 * self.steps_since_last_apple
+        reward -= 0.5 + 0.01 * min(self.steps_since_last_apple, 20)
 
         info = {
             "apples": self.score,

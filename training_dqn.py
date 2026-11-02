@@ -8,6 +8,7 @@ from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 
 from curriculum_callback import CurriculumCallback
+from metrics_callback import MetricsCallback
 
 ALGORITHM = "DQN"
 
@@ -19,8 +20,13 @@ def main():
     ap.add_argument("--curriculum", action="store_true")
     ap.add_argument("--timesteps", type=int, default=100_000)
     ap.add_argument("--eval-freq", type=int, default=10_000)
-    ap.add_argument("--models-dir", default=f"models/{ALGORITHM}")
+    ap.add_argument("--models-dir", default=None)
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+
+    variant = "curriculum" if args.curriculum else "baseline"
+    if args.models_dir is None:
+        args.models_dir = f"models/{ALGORITHM}_curriculum_s{args.seed}" if args.curriculum else f"models/{ALGORITHM}_s{args.seed}"
 
     os.makedirs(args.models_dir, exist_ok=True)
     os.makedirs("logs", exist_ok=True)
@@ -36,19 +42,20 @@ def main():
         best_model_save_path=f"{args.models_dir}/best_model",
         log_path=f"./logs/eval/{ALGORITHM}",
         eval_freq=args.eval_freq,
+        n_eval_episodes=20,
         deterministic=True,
-    )]
+    ), MetricsCallback()]
     if args.curriculum:
         callbacks.append(CurriculumCallback(
             thresholds=DEFAULT_THRESHOLDS, patience=20,
         ))
 
-    model = DQN("MlpPolicy", env, verbose=1, tensorboard_log="logs")
+    model = DQN("MlpPolicy", env, verbose=1, tensorboard_log="logs", seed=args.seed)
     model.learn(total_timesteps=args.timesteps,
-                tb_log_name=ALGORITHM, callback=callbacks)
+                tb_log_name=f"{ALGORITHM}_{variant}_s{args.seed}", callback=callbacks)
     model.save(f"{args.models_dir}/{args.timesteps}")
 
-    mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10)
+    mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=20)
     print(f"Mean reward (level 4): {mean_reward} ± {std_reward}")
 
     env.close()

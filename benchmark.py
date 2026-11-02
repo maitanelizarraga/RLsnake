@@ -21,7 +21,6 @@ METRICS = {
 DEFAULT_VARIANTS = "baseline=models/{algo}"
 
 
-# ---------------------------------------------------------------- paths
 
 def resolve_model_path(model_path: str) -> Path:
     path = Path(model_path)

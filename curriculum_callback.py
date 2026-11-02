@@ -11,6 +11,9 @@ means:
     - advance to level 2 when mean apples/20 episodes >= 1.0
     - advance to level 3 when mean apples/20 episodes >= 2.0
     - advance to level 4 when mean apples/20 episodes >= 3.0
+
+The keys of `thresholds` are the levels you advance *to*; level 1 is always
+the starting level (it needs no threshold).
 """
 from __future__ import annotations
 
@@ -22,13 +25,15 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 class CurriculumCallback(BaseCallback):
     def __init__(self, thresholds: dict[int, float], patience: int = 20,
-                 verbose: int = 1):
+                 start_level: int = 1, verbose: int = 1):
         super().__init__(verbose=verbose)
         self.thresholds = dict(thresholds)
         self.patience = patience
         self.episode_apples: deque[int] = deque(maxlen=patience)
-        self._levels_sorted = sorted(self.thresholds)
-        self.current_level = self._levels_sorted[0]
+        # FIX: the start level is NOT a key of `thresholds`. Before, the first
+        # key (2) was used as the starting level, so level 1 was skipped.
+        self._levels_sorted = sorted({start_level, *self.thresholds})
+        self.current_level = start_level
 
     def _on_training_start(self) -> None:
         self.training_env.env_method(
@@ -61,7 +66,8 @@ class CurriculumCallback(BaseCallback):
             )
             if self.verbose:
                 print(f"[Curriculum] mean apples {mean_apples:.2f} >= "
-                      f"{self.thresholds[next_level]:.2f} -> level {next_level}")
+                      f"{self.thresholds[next_level]:.2f} -> level {next_level} "
+                      f"(t={self.num_timesteps})")
 
     def _next_level(self) -> int | None:
         idx = self._levels_sorted.index(self.current_level)

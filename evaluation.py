@@ -19,7 +19,7 @@ env = gym.make("Snake-v0", render_mode="human", render_fps=10)
 
 try:
     for algo, algo_cls in ALGORITHMS.items():
-        model_path = f"models/{algo}/100000"  # mismo patrón que training_*.py
+        model_path = f"models/{algo}_s0/best_model/best_model"  # igual que benchmark.py (EvalCallback)
         print(f"\n=== {algo} -> {model_path} ===")
 
         # Load model
