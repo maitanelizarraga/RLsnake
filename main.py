@@ -33,7 +33,7 @@ def main():
     if args.rapido:
         pasos, eval_freq, episodios = "5000", "1000", "10"
     else:
-        pasos, eval_freq, episodios = "200000", "20000", "100"
+        pasos, eval_freq, episodios = "1000000", "100000", "100"
 
     python = sys.executable  # el mismo Python (y entorno) con el que se lanza main.py
 
